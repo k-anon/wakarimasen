@@ -54,7 +54,6 @@ def application(environ, start_response):
 
     try:
         interboard.remove_old_bans()
-        interboard.remove_old_backups()
         return function(environ, start_response)
     except WakaError, e:
         return app.fffffff(environ, start_response, e)

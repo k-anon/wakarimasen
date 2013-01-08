@@ -27,7 +27,7 @@ try:
 except ImportError:
     board_config_defaults = None
 
-from sqlalchemy.sql import case, or_, and_, select, func, null
+from sqlalchemy.sql import case, or_, and_, not_, select, func, null
 
 class Board(object):
     def __init__(self, board):
@@ -119,7 +119,8 @@ class Board(object):
 
         session = model.Session()
         table = self.table
-        sql = table.select().order_by(table.c.stickied.desc(),
+        sql = table.select().where(not_(table.c.backup == True)).order_by(
+            table.c.stickied.desc(),
             table.c.lasthit.desc(),
             case({0: table.c.num}, table.c.parent, table.c.parent).asc(),
             table.c.num.asc()
@@ -150,7 +151,10 @@ class Board(object):
         offset = page * per_page
 
         # Query 1: Grab all thread (OP) entries.
-        op_sql = table.select().where(table.c.parent == 0).order_by(
+        op_sql = table.select().where(and_(
+                    table.c.parent == 0,
+                    not_(table.c.backup == True)
+                )).order_by(
                     table.c.stickied.desc(),
                     table.c.lasthit.desc(),
                     table.c.num.asc()
@@ -162,8 +166,11 @@ class Board(object):
             thread_nums.append(op.num)
 
         # Query 2: Grab all reply entries and process.
-        reply_sql = table.select().where(table.c.parent.in_(thread_nums))\
-                    .order_by(table.c.stickied.desc(),
+        reply_sql = table.select().where(and_(
+                        table.c.parent.in_(thread_nums),
+                        not_(table.c.backup == True)
+                    )).order_by(table.c.stickied.desc(),
+                        table.c.stickied.desc(),
                         table.c.num.asc()
                     )
         reply_query = session.execute(reply_sql)
@@ -312,10 +319,14 @@ class Board(object):
     def get_thread_posts(self, threadid):
         session = model.Session()
         sql = self.table.select(
-            or_(
-                self.table.c.num == threadid,
-                self.table.c.parent == threadid
-            )).order_by(self.table.c.num.asc())
+            and_(
+                not_(self.table.c.backup == True),
+                or_(
+                    self.table.c.num == threadid,
+                    self.table.c.parent == threadid
+                )
+            )
+        ).order_by(self.table.c.num.asc())
         query = session.execute(sql)
 
         thread = []
@@ -468,8 +479,13 @@ class Board(object):
         # Get parent post and original file if post_num is provided (editing).
         if post_num:
             original_row = session.execute(
-                self.table.select(self.table.c.num == post_num))\
-                .fetchone()
+                self.table.select(
+                    and_(
+                        self.table.c.num == post_num,
+                        not_(self.table.c.backup == True)
+                    )
+                )
+            ).fetchone()
 
             if original_row == None:
                 raise WakaError('Post not found') # TODO
@@ -734,7 +750,7 @@ class Board(object):
             md5=md5, width=width, height=height, thumbnail=thumbnail,
             tn_width=tn_width, tn_height=tn_height, admin_post=admin_post,
             stickied=sticky, locked=lock, lastedit_ip=lastedit_ip,
-            lasthit=lasthit, lastedit=lastedit)
+            lasthit=lasthit, lastedit=lastedit, backup=False)
 
         # finally, write to the database
         result = None
@@ -927,6 +943,8 @@ class Board(object):
     def delete_stuff(self, posts, password, file_only, archiving,
                      caller='user', admindelete=False,
                      admin_task_data=None, from_window=False):
+        self.remove_old_backups()
+
         if caller == 'internal':
             # Internally called; force admin.
             admindelete = True
@@ -979,39 +997,6 @@ class Board(object):
             if password != row.password:
                 raise WakaError(post + strings.BADDELPASS)
 
-        if config.POST_BACKUP and not archiving:
-            if not timestampofarchival:
-                timestampofarchival = time.time()
-            sql = model.backup.insert().values(board_name=self.name,
-                                               postnum=row.num,
-                                               parent=row.parent,
-                                               timestamp=row.timestamp,
-                                               lasthit=row.lasthit,
-                                               ip=row.ip,
-                                               date=row.date,
-                                               name=row.name,
-                                               trip=row.trip,
-                                               email=row.email,
-                                               subject=row.subject,
-                                               password=row.password,
-                                               comment=row.comment,
-                                               image=row.image,
-                                               size=row.size,
-                                               md5=row.md5,
-                                               width=row.width,
-                                               height=row.height,
-                                               thumbnail=row.thumbnail,
-                                               tn_width=row.tn_width,
-                                               tn_height=row.tn_height,
-                                               lastedit=row.lastedit,
-                                               lastedit_ip=row.lastedit_ip,
-                                               admin_post=row.admin_post,
-                                               stickied=row.stickied,
-                                               locked=row.locked,
-                                               timestampofarchival=\
-                                                  timestampofarchival)
-            session.execute(sql)
-
         if file_only:
             # remove just the image and update the database
             select_post_image = select([table.c.image, table.c.thumbnail],
@@ -1042,20 +1027,19 @@ class Board(object):
                     self.delete_file(i.image, i.thumbnail, archiving=archiving)
 
             if config.POST_BACKUP and not archiving:
-                delete_query = table.delete(table.c.num == post)
+                if not timestampofarchival:
+                    timestampofarchival = time.time()
+                delete_query = table.update().where(or_(
+                    table.c.num == post,
+                    table.c.parent == post,
+                )).values(
+                    backup = True,
+                    timestampofarchival = timestampofarchival
+                )
             else:
                 delete_query = table.delete(or_(
                     table.c.num == post, table.c.parent == post))
             session.execute(delete_query)
-
-            # Also back-up child posts.
-            if config.POST_BACKUP and not archiving:
-                sql = select([table.c.num], table.c.parent == post)
-                sel_posts = session.execute(sql).fetchall()
-                for i in [p[0] for p in sel_posts]:
-                    self.delete_post(i, '', False, False,
-                                     from_window=from_window, admin=True,
-                                     recur=True)
 
         # Cache building
         if not row.parent:
@@ -1136,9 +1120,16 @@ class Board(object):
 
     def remove_backup_post(self, task_data, post, restore=False, child=False):
         session = model.Session()
-        table = model.backup
-        sql = table.select().where(and_(table.c.postnum == post,
-                                        table.c.board_name == self.name))
+        table = self.table
+        sql = table.select().where(
+            and_(
+                or_(
+                    table.c.num == post,
+                    table.c.parent == post
+                ),
+                table.c.backup == True
+            )
+        )
         row = session.execute(sql).fetchone()
 
         if not row:
@@ -1159,46 +1150,14 @@ class Board(object):
         if restore:
             my_table = self.table
             if row.parent and not child:
-                sql = my_table.select().where(my_table.c.num == row.parent)
-                parent = session.execute(sql).fetchone()
+                sql = select([func.count()], and_(
+                    table.c.num == row.parent,
+                    table.c.backup == False
+                ))
+                parent = session.execute(sql).fetchone()[0]
                 if not parent:
                     raise WakaError('Cannot restore post %s: '
                                     'Parent thread deleted.' % (post))
-                stickied = parent.stickied
-                locked = parent.locked
-                lasthit = parent.lasthit
-            else:
-                stickied = row.stickied
-                locked = row.locked
-                lasthit = row.lasthit
-
-            # Perform insertion.
-            sql = my_table.insert().values(num=row.postnum,
-                                           parent=row.parent,
-                                           timestamp=row.timestamp,
-                                           lasthit=lasthit,
-                                           ip=row.ip,
-                                           date=row.date,
-                                           name=row.name,
-                                           trip=row.trip,
-                                           email=row.email,
-                                           subject=row.subject,
-                                           password=row.password,
-                                           comment=row.comment,
-                                           image=row.image,
-                                           size=row.size,
-                                           md5=row.md5,
-                                           width=row.width,
-                                           height=row.height,
-                                           thumbnail=row.thumbnail,
-                                           tn_width=row.tn_width,
-                                           tn_height=row.tn_height,
-                                           lastedit=row.lastedit,
-                                           lastedit_ip=row.lastedit_ip,
-                                           admin_post=row.admin_post,
-                                           stickied=stickied,
-                                           locked=locked)
-            session.execute(sql)
 
             # Move file/thumb.
             if arch_image and os.path.exists(arch_image):
@@ -1210,12 +1169,6 @@ class Board(object):
                                  row.thumbnail) \
                     and os.path.exists(arch_thumb):
                 os.renames(arch_thumb, os.path.join(self.path, row.thumb))
-
-            if not child:
-                if row.parent:
-                    self.build_thread_cache(row.parent)
-                else:
-                    self.build_thread_cache(row.postnum)
         else:
             # Delete file/thumb.
             if arch_image and os.path.exists(arch_image):
@@ -1229,18 +1182,30 @@ class Board(object):
         # Remove (and restore if appropriate) all thread backups made at the
         # point of archival.
         if not row.parent:
-            sql = table.select(and_(table.c.parent == row.postnum,
-                                    table.c.board_name == self.name,
+            sql = table.select(and_(table.c.parent == row.num,
                                     table.c.timestampofarchival\
                                         == row.timestampofarchival))\
                        .order_by(table.c.num.asc())
             for row in session.execute(sql):
-                self.remove_backup_post(None, row.postnum, restore=restore,
+                self.remove_backup_post(None, row.num, restore=restore,
                                         child=True)
 
-        sql = table.delete().where(and_(table.c.postnum == post,
-                                        table.c.board_name == self.name))
-        session.execute(sql)
+
+        if not restore:
+            sql = table.delete().where(or_(table.c.num == post, table.c.parent == post))
+            session.execute(sql)
+        elif restore and not child:
+            # Update as a non-backup.
+            sql = table.update().where(or_(
+                table.c.num == post,
+                table.c.parent == post
+            )).values(backup = False)
+            session.execute(sql)
+
+            if row.parent:
+                self.build_thread_cache(row.parent)
+            else:
+                self.build_thread_cache(row.num)
 
     def make_report_post_window(self, posts, from_window=False):
         if len(posts) == 0:
@@ -1720,6 +1685,37 @@ class Board(object):
         Template('rss_template', items=posts,
                  pub_date=misc.make_date(time.time(), 'http'))\
                  .render_to_file(rss_file)
+
+    def remove_old_backups(self):
+        session = model.Session()
+        table = self.table
+
+        sql = table.select().where(table.c.timestampofarchival.op('+')\
+                                   (config.POST_BACKUP_EXPIRE) <= time.time())
+        query = session.execute(sql)
+
+        for row in query:
+            backup_path = os.path.join(self.path,
+                                       self.options['ARCHIVE_DIR'],
+                                       self.options['BACKUP_DIR'], '')
+            if row.image:
+                # Delete backup image; then, mark post for deletion.
+                filename = os.path.join(backup_path,
+                                        os.path.basename(row.image))
+                if os.path.exists(filename):
+                    os.unlink(filename)
+            if row.thumbnail \
+                    and re.match(self.options['THUMB_DIR'],
+                                 row.thumbnail):
+                filename = os.path.join(backup_path,
+                                        os.path.basename(row.thumbnail))
+                if os.path.exists(filename):
+                    os.unlink(filename)
+
+        # Perform SQL DELETE
+        sql = table.delete().where(table.c.timestampofarchival.op('+')\
+                                  (config.POST_BACKUP_EXPIRE) <= time.time())
+        session.execute(sql)
 
 
 class NoBoard(object):

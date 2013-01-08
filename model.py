@@ -20,7 +20,8 @@ class CompactPost(object):
         'num', 'parent', 'timestamp', 'lasthit', 'ip', 'date', 'name', 'trip',
         'email', 'subject', 'password', 'comment', 'image', 'size', 'md5',
         'width', 'height', 'thumbnail', 'tn_width', 'tn_height', 'lastedit',
-        'lastedit_ip', 'admin_post', 'stickied', 'locked',
+        'lastedit_ip', 'admin_post', 'stickied', 'locked', 'backup',
+        'timestampofarchival',
         # extensions
         'abbrev',
     ]
@@ -69,7 +70,10 @@ def board(name):
         Column("admin_post", Text),                  # ADDED - Admin post?
         # TODO: Probably should make this Boolean. Keeping as int for now to maintain compatibility with sorting functions.
         Column("stickied", Integer),                    # ADDED - Stickied?
-        Column("locked", Text)                          # ADDED - Locked?
+        Column("locked", Text),                         # ADDED - Locked?
+
+        Column("backup", Boolean),                      # Hide from normal view?
+        Column("timestampofarchival", Integer),         # Time since sticking into backup.
     )
 
     table.create(bind=engine, checkfirst=True)
@@ -131,39 +135,6 @@ report = Table(config.SQL_REPORT_TABLE, metadata,
     Column("timestamp", Integer),                       # Timestamp in seconds for when the post was created
     Column("date", Text),                               # Date of the report
     Column("resolved", Integer)                         # Is it resolved? (1: yes 0: no)
-)
-
-backup = Table(config.SQL_BACKUP_TABLE, metadata,
-    Column("num", Integer, primary_key=True),           # Primary key, auto-increments
-    Column("board_name", String(25), nullable=False),   # Board name
-    Column("postnum", Integer),                         # Post number
-    Column("parent", Integer),                          # Parent post for replies in threads. For original posts, must be set to 0 (and not null)
-    Column("timestamp", Integer),                       # Timestamp in seconds for when the post was created
-    Column("lasthit", Integer),                         # Last activity in thread. Must be set to the same value for BOTH the original post and all replies!
-    Column("ip", Text),                                 # IP number of poster, in integer form!
-
-    Column("date", Text),                               # The date, as a string
-    Column("name", Text(convert_unicode=True)),         # Name of the poster
-    Column("trip", Text),                               # Tripcode (encoded)
-    Column("email", Text),                              # Email address
-    Column("subject", Text(convert_unicode=True)),      # Subject
-    Column("password", Text),                           # Deletion password (in plaintext) 
-    Column("comment", Text(convert_unicode=True)),      # Comment text, HTML encoded.
-
-    Column("image", Text(convert_unicode=True)),        # Image filename with path and extension (IE, src/1081231233721.jpg)
-    Column("size", Integer),                            # File size in bytes
-    Column("md5", Text),                                # md5 sum in hex
-    Column("width", Integer),                           # Width of image in pixels
-    Column("height", Integer),                          # Height of image in pixels
-    Column("thumbnail", Text),                          # Thumbnail filename with path and extension
-    Column("tn_width", Text),                           # Thumbnail width in pixels
-    Column("tn_height", Text),                          # Thumbnail height in pixels
-    Column("lastedit", Text),                           # ADDED - Date of previous edit, as a string 
-    Column("lastedit_ip", Text),                        # ADDED - Previous editor of the post, if any
-    Column("admin_post", Text),                         # ADDED - Admin post?
-    Column("stickied", Integer),                        # ADDED - Stickied?
-    Column("locked", Text),                             # ADDED - Locked?
-    Column("timestampofarchival", Integer)              # When was this backed up?
 )
 
 passprompt = Table(config.SQL_PASSPROMPT_TABLE, metadata,

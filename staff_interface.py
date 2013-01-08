@@ -424,7 +424,7 @@ class StaffInterface(Template):
             sql = sql.where(table.c.board.in_(self.user.reign))
 
         # Determine order.
-        if sortby_type in ('board', 'postnum', 'date'):
+        if sortby_type in ('board', 'num', 'date'):
             try:
                 column = getattr(table.c, sortby_type)
             except AttributeError:
@@ -492,7 +492,7 @@ class StaffInterface(Template):
     @interface_for(TRASH_PANEL)
     def make_admin_trash_panel(self):
         board = self.board
-        table = model.backup
+        table = board.table
         session = model.Session()
         template_kwargs = {}
 
@@ -501,11 +501,11 @@ class StaffInterface(Template):
 
         if str(self.page).startswith('t'):
             self.page = self.page[1:]
-            sql = table.select().where(and_(or_(table.c.postnum == self.page,
+            sql = table.select().where(and_(or_(table.c.num == self.page,
                                                 table.c.parent == self.page),
-                                            table.c.board_name == board.name))\
+                                            table.c.backup == True))\
                                 .order_by(table.c.timestampofarchival.desc(),
-                                          table.c.postnum.asc())
+                                          table.c.num.asc())
             thread = [dict(x.items()) for x in session.execute(sql).fetchall()]
 
             if not thread:
@@ -526,15 +526,14 @@ class StaffInterface(Template):
         elif config.POST_BACKUP:
             max_res = board.options['IMAGES_PER_PAGE']
 
-            sqlcond = and_(or_(table.c.parent == 0,
+            sqlcond = and_(table.c.backup == True, or_(table.c.parent == 0,
                 and_(table.c.parent > 0, not_(exists([table.c.num],
-                    table.c.parent == table.c.postnum)))),
-                table.c.board_name == board.name)
+                    table.c.parent == table.c.num)))))
 
             # Acquire the number of full threads *and* orphaned posts.
             sql = select([func.count()], sqlcond, table)\
                   .order_by(table.c.timestampofarchival.desc(),
-                              table.c.postnum.asc())
+                              table.c.num.asc())
 
             thread_ct = session.execute(sql).fetchone()[0]
 
@@ -561,7 +560,7 @@ class StaffInterface(Template):
             # list.
             for item in threads:
                 thread = item['posts']
-                threadnum = thread[0]['postnum']
+                threadnum = thread[0]['num']
                 postcount = imgcount = shownimages = 0
 
                 # Orphaned?
@@ -578,11 +577,13 @@ class StaffInterface(Template):
                     offset = postcount - imgcount if postcount > max_res \
                                                   else 0
 
-                    sql = table.select().where(table.c.parent == threadnum)\
-                            .order_by(table.c.timestampofarchival.desc(),
-                                      table.c.postnum.asc())\
-                            .limit(max_res)\
-                            .offset(offset)
+                    sql = table.select().where(and_(
+                        table.c.backup == True,
+                        table.c.parent == threadnum
+                    )).order_by(
+                        table.c.timestampofarchival.desc(),
+                        table.c.num.asc()
+                    ).limit(max_res).offset(offset)
                     thread.extend([dict(x.items()) \
                                        for x in session.execute(sql)])
 

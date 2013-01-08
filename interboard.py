@@ -236,35 +236,6 @@ def remove_old_bans():
             ip = misc.dec_to_dot(row['ival1'])
             remove_htaccess_entry(ip)
 
-def remove_old_backups():
-    session = model.Session()
-    table = model.backup
-    sql = table.select().where(table.c.timestampofarchival.op('+')\
-                               (config.POST_BACKUP_EXPIRE) <= time.time())
-    query = session.execute(sql)
-
-    for row in query:
-        board_obj = board.Board(row['board_name'])
-        backup_path = os.path.join(board_obj.path,
-                                   board_obj.options['ARCHIVE_DIR'],
-                                   board_obj.options['BACKUP_DIR'], '')
-        if row.image:
-            # Delete backup image; then, mark post for deletion.
-            filename = os.path.join(backup_path, os.path.basename(row.image))
-            if os.path.exists(filename):
-                os.unlink(filename)
-        if row.thumbnail \
-                and re.match(board_obj.options['THUMB_DIR'], row.thumbnail):
-            filename = os.path.join(backup_path,
-                                    os.path.basename(row.thumbnail))
-            if os.path.exists(filename):
-                os.unlink(filename)
-
-    # Perform SQL DELETE
-    sql = table.delete().where(table.c.timestampofarchival.op('+')\
-                              (config.POST_BACKUP_EXPIRE) <= time.time())
-    session.execute(sql)
-
 def add_htaccess_entry(ip):
     htaccess = os.path.join(local.environ['DOCUMENT_ROOT'],
                             config.HTACCESS_PATH, '.htaccess')
